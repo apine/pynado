@@ -1,8 +1,9 @@
 import os
-from typing import Optional
+from typing import Optional, Dict
 from dotenv import load_dotenv
 from nado_protocol.client import create_nado_client, NadoClientMode
 from nado_protocol.utils.math import from_x18, to_x18
+from nado_protocol.engine_client.types.execute import PlaceMarketOrderParams, MarketOrderParams
 
 class Nado:
     """
@@ -28,40 +29,188 @@ class Nado:
 
         self.client = create_nado_client(self.mode, self._private_key)
         self._address = self.client.context.signer.address
+        self._symbols_cache: Dict[str, int] = {}
+        self._id_to_symbol_cache: Dict[int, str] = {}
+        self._load_symbols()
+
+    def _load_symbols(self):
+        """Fetch all products and build symbol <-> product_id mappings."""
+        symbols_data = self.client.market.get_all_product_symbols()
+        for item in symbols_data:
+            symbol = item.symbol.upper()
+            self._symbols_cache[symbol] = item.product_id
+            self._id_to_symbol_cache[item.product_id] = symbol
+
+    def _resolve_product_id(self, symbol: str) -> int:
+        """Map a symbol string to a product ID."""
+        symbol = symbol.upper()
+        if symbol in self._symbols_cache:
+            return self._symbols_cache[symbol]
+
+        # Try appending -PERP if not found
+        if f"{symbol}-PERP" in self._symbols_cache:
+            return self._symbols_cache[f"{symbol}-PERP"]
+
+        # If it's a digit string, assume it's an ID
+        if symbol.isdigit():
+            return int(symbol)
+
+        raise ValueError(f"Unknown symbol: {symbol}. Available: {list(self._symbols_cache.keys())}")
 
     @property
     def address(self) -> str:
-        """
-        Return the default wallet address associated with this client.
-        """
+        """Return the default wallet address associated with this client."""
         return self._address
 
     @property
-    def balance(self) -> float:
-        """
-        Return the USDT (Product ID 0) balance.
-        """
-        # 1. Get Subaccounts
+    def subaccount(self) -> str:
+        """Return the default subaccount name."""
         subaccounts = self.client.subaccount.get_subaccounts(address=self._address)
         if not subaccounts.subaccounts:
-            return 0.0
+            raise ValueError("No subaccounts found for this address.")
+        return subaccounts.subaccounts[0].subaccount
 
-        # We assume the default subaccount (usually "default")
-        # In the SDK, subaccount names are often 'default'.
-        # The reference code just took the first one.
-        first_subaccount = subaccounts.subaccounts[0]
-        subaccount_name = first_subaccount.subaccount
+    @property
+    def balance(self) -> float:
+        """Return the USDT (Product ID 0) balance."""
+        summary = self.client.subaccount.get_engine_subaccount_summary(subaccount=self.subaccount)
 
-        # 2. Get Summary
-        summary = self.client.subaccount.get_engine_subaccount_summary(subaccount=subaccount_name)
-
-        # 3. Find USDT balance (Spot Balance with Product ID 0)
-        # Assuming 0 is USDT as is standard in Vertex/Nado clones
         usdt_balance = 0.0
         if summary.spot_balances:
             for balance in summary.spot_balances:
                 if balance.product_id == 0:
                     usdt_balance = from_x18(int(balance.balance.amount))
                     break
-
         return usdt_balance
+
+    def get_position(self, symbol: str) -> dict:
+        """
+        Get the current position for a specific symbol.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :return: A dictionary with amount, v_quote_balance, and average_entry_price.
+        """
+        product_id = self._resolve_product_id(symbol)
+        summary = self.client.subaccount.get_engine_subaccount_summary(subaccount=self.subaccount)
+
+        # Check Spot
+        if summary.spot_balances:
+            for item in summary.spot_balances:
+                if item.product_id == product_id:
+                    amount = from_x18(int(item.balance.amount))
+                    return {
+                        "symbol": symbol,
+                        "amount": amount,
+                        "v_quote_balance": 0.0,
+                        "average_entry_price": 0.0
+                    }
+
+        # Check Perp
+        if summary.perp_balances:
+            for item in summary.perp_balances:
+                if item.product_id == product_id:
+                    amount = from_x18(int(item.balance.amount))
+                    v_quote = from_x18(int(item.balance.v_quote_balance))
+                    entry_price = abs(v_quote / amount) if amount != 0 else 0.0
+                    return {
+                        "symbol": symbol,
+                        "amount": amount,
+                        "v_quote_balance": v_quote,
+                        "average_entry_price": entry_price
+                    }
+
+        return {
+            "symbol": symbol,
+            "amount": 0.0,
+            "v_quote_balance": 0.0,
+            "average_entry_price": 0.0
+        }
+
+    def get_all_positions(self) -> list[dict]:
+        """
+        Get all non-zero positions.
+
+        :return: A list of dictionaries for all products with a balance.
+        """
+        summary = self.client.subaccount.get_engine_subaccount_summary(subaccount=self.subaccount)
+        positions = []
+
+        # Process Spot
+        for item in summary.spot_balances:
+            amount = from_x18(int(item.balance.amount))
+            if amount != 0:
+                symbol = self._id_to_symbol_cache.get(item.product_id, str(item.product_id))
+                positions.append({
+                    "symbol": symbol,
+                    "amount": amount,
+                    "v_quote_balance": 0.0,
+                    "average_entry_price": 0.0
+                })
+
+        # Process Perp
+        for item in summary.perp_balances:
+            amount = from_x18(int(item.balance.amount))
+            if amount != 0:
+                symbol = self._id_to_symbol_cache.get(item.product_id, str(item.product_id))
+                v_quote = from_x18(int(item.balance.v_quote_balance))
+                entry_price = abs(v_quote / amount) if amount != 0 else 0.0
+                positions.append({
+                    "symbol": symbol,
+                    "amount": amount,
+                    "v_quote_balance": v_quote,
+                    "average_entry_price": entry_price
+                })
+
+        return positions
+
+    def buy(self, symbol: str, amount: float, slippage: float = 0.05) -> dict:
+        """
+        Place a market buy order.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :param amount: The amount to buy (float)
+        :param slippage: Max allowed slippage (default 5%)
+        :return: A simplified dictionary with order results.
+        """
+        product_id = self._resolve_product_id(symbol)
+        params = PlaceMarketOrderParams(
+            product_id=product_id,
+            market_order=MarketOrderParams(
+                sender=self.subaccount,
+                amount=to_x18(amount),
+                nonce=None
+            ),
+            slippage=slippage
+        )
+        res = self.client.market.place_market_order(params)
+        return {
+            "status": res.status.value,
+            "symbol": self._id_to_symbol_cache.get(product_id, str(product_id)),
+            "digest": res.data.digest if res.data else None,
+        }
+
+    def sell(self, symbol: str, amount: float, slippage: float = 0.05) -> dict:
+        """
+        Place a market sell order.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :param amount: The amount to sell (float)
+        :param slippage: Max allowed slippage (default 5%)
+        :return: A simplified dictionary with order results.
+        """
+        product_id = self._resolve_product_id(symbol)
+        params = PlaceMarketOrderParams(
+            product_id=product_id,
+            market_order=MarketOrderParams(
+                sender=self.subaccount,
+                amount=-to_x18(amount),
+                nonce=None
+            ),
+            slippage=slippage
+        )
+        res = self.client.market.place_market_order(params)
+        return {
+            "status": res.status.value,
+            "symbol": self._id_to_symbol_cache.get(product_id, str(product_id)),
+            "digest": res.data.digest if res.data else None,
+        }
