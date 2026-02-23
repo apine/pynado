@@ -24,27 +24,27 @@ def test_nado_basic():
         symbol = "BTC-PERP"
         amount = 0.0001 # Small test amount
 
-        print(f"\n[1/2] Placing Market BUY for {amount} {symbol}...")
+        # 1. Market Buy
+        print(f"\n[1/3] Placing Market BUY for {amount} {symbol}...")
         buy_res = client.buy(symbol, amount)
         print(f"BUY Response: {json.dumps(buy_res, indent=2)}")
 
         if buy_res["status"] == "success":
-            print("\nWaiting 2 seconds for engine to settle...")
             time.sleep(2)
-
             pos = client.get_position(symbol)
             print(f"Current Position: {json.dumps(pos, indent=2)}")
 
-            print("\nWaiting 10 seconds before selling...")
-            time.sleep(10)
+            # 2. Limit Sell (Closing)
+            limit_price = pos["average_entry_price"] * 1.05 # 5% profit target
+            print(f"\n[2/3] Placing Limit SELL at {limit_price:.2f} for {amount} {symbol}...")
+            limit_res = client.sell_limit(symbol, limit_price, amount, expires_in=60, reduce_only=True)
+            print(f"LIMIT Response: {json.dumps(limit_res, indent=2)}")
 
-            print(f"[2/2] Placing Market SELL for {amount} {symbol}...")
+            # 3. Cleanup: Market Sell to actually close
+            print(f"\n[3/3] Closing position with Market SELL...")
             sell_res = client.sell(symbol, amount)
             print(f"SELL Response: {json.dumps(sell_res, indent=2)}")
 
-            print("\nFinal Position Check:")
-            final_pos = client.get_position(symbol)
-            print(json.dumps(final_pos, indent=2))
         else:
             print("Skipping further steps because buy failed.")
 

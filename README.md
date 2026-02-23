@@ -45,7 +45,19 @@ client.buy("BTC", 0.01)
 client.sell("ETH-PERP", 0.5)
 ```
 
-### 4. Checking Positions
+### 4. Limit Orders
+
+Specify a price and optional expiration (default is 24 hours).
+
+```python
+# Limit Buy 0.01 BTC at 65,000 USD
+client.buy_limit("BTC", 65000, 0.01)
+
+# Limit Sell 0.1 ETH-PERP at 3,500 USD (Expires in 1 hour, Reduce-Only)
+client.sell_limit("ETH-PERP", 3500, 0.1, expires_in=3600, reduce_only=True)
+```
+
+### 5. Checking Positions
 
 You can easily check specific positions or get an overview of your entire account.
 
@@ -66,4 +78,5 @@ for p in all_pos:
 *   **Automatic Scaling:** Handles 18-decimal scaling for you (returns `float` for balances, accepts `float` for orders).
 *   **Symbol Resolution:** Supports both Spot ("BTC") and Perp ("BTC-PERP") symbols.
 *   **Position Management:** Friendly methods to retrieve current holdings and average entry prices.
+*   **Intelligent Defaults:** Automatically handles price increments (rounding) and order expiration.
 *   **Environment Friendly:** Native support for `.env` files.

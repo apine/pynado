@@ -1,9 +1,12 @@
 import os
+import json
 from typing import Optional, Dict
 from dotenv import load_dotenv
 from nado_protocol.client import create_nado_client, NadoClientMode
-from nado_protocol.utils.math import from_x18, to_x18
-from nado_protocol.engine_client.types.execute import PlaceMarketOrderParams, MarketOrderParams
+from nado_protocol.utils.math import from_x18, to_x18, round_x18
+from nado_protocol.engine_client.types.execute import PlaceMarketOrderParams, MarketOrderParams, PlaceOrderParams, OrderParams
+from nado_protocol.utils.expiration import OrderType, get_expiration_timestamp
+from nado_protocol.utils.order import build_appendix
 
 class Nado:
     """
@@ -31,15 +34,24 @@ class Nado:
         self._address = self.client.context.signer.address
         self._symbols_cache: Dict[str, int] = {}
         self._id_to_symbol_cache: Dict[int, str] = {}
+        self._price_increment_cache: Dict[int, int] = {}
         self._load_symbols()
 
     def _load_symbols(self):
-        """Fetch all products and build symbol <-> product_id mappings."""
+        """Fetch all products and build symbol mappings and cache increments."""
+        # 1. Map symbols to IDs
         symbols_data = self.client.market.get_all_product_symbols()
         for item in symbols_data:
             symbol = item.symbol.upper()
             self._symbols_cache[symbol] = item.product_id
             self._id_to_symbol_cache[item.product_id] = symbol
+
+        # 2. Get market info for increments
+        all_products = self.client.market.get_all_engine_markets()
+        for spot in all_products.spot_products:
+            self._price_increment_cache[spot.product_id] = int(spot.book_info.price_increment_x18)
+        for perp in all_products.perp_products:
+            self._price_increment_cache[perp.product_id] = int(perp.book_info.price_increment_x18)
 
     def _resolve_product_id(self, symbol: str) -> int:
         """Map a symbol string to a product ID."""
@@ -56,6 +68,31 @@ class Nado:
             return int(symbol)
 
         raise ValueError(f"Unknown symbol: {symbol}. Available: {list(self._symbols_cache.keys())}")
+
+    def _parse_error(self, error_str: str) -> tuple[str, Optional[int]]:
+        """Attempt to parse error details from a string, which might be JSON."""
+        try:
+            data = json.loads(error_str)
+            return str(data.get("error", error_str)), data.get("error_code")
+        except:
+            return error_str, None
+
+    def _handle_order_response(self, res, symbol: str) -> dict:
+        """Standardize the order response and handle errors."""
+        if res.status.value == "success":
+            return {
+                "status": "success",
+                "symbol": symbol,
+                "digest": res.data.digest if res.data else None,
+            }
+
+        error_msg, error_code = self._parse_error(str(res.error))
+        return {
+            "status": "failure",
+            "symbol": symbol,
+            "error": error_msg,
+            "error_code": error_code or res.error_code
+        }
 
     @property
     def address(self) -> str:
@@ -172,22 +209,22 @@ class Nado:
         :param slippage: Max allowed slippage (default 5%)
         :return: A simplified dictionary with order results.
         """
-        product_id = self._resolve_product_id(symbol)
-        params = PlaceMarketOrderParams(
-            product_id=product_id,
-            market_order=MarketOrderParams(
-                sender=self.subaccount,
-                amount=to_x18(amount),
-                nonce=None
-            ),
-            slippage=slippage
-        )
-        res = self.client.market.place_market_order(params)
-        return {
-            "status": res.status.value,
-            "symbol": self._id_to_symbol_cache.get(product_id, str(product_id)),
-            "digest": res.data.digest if res.data else None,
-        }
+        try:
+            product_id = self._resolve_product_id(symbol)
+            params = PlaceMarketOrderParams(
+                product_id=product_id,
+                market_order=MarketOrderParams(
+                    sender=self.subaccount,
+                    amount=to_x18(amount),
+                    nonce=None
+                ),
+                slippage=slippage
+            )
+            res = self.client.market.place_market_order(params)
+            return self._handle_order_response(res, symbol)
+        except Exception as e:
+            msg, code = self._parse_error(str(e))
+            return {"status": "failure", "symbol": symbol, "error": msg, "error_code": code}
 
     def sell(self, symbol: str, amount: float, slippage: float = 0.05) -> dict:
         """
@@ -198,19 +235,83 @@ class Nado:
         :param slippage: Max allowed slippage (default 5%)
         :return: A simplified dictionary with order results.
         """
-        product_id = self._resolve_product_id(symbol)
-        params = PlaceMarketOrderParams(
-            product_id=product_id,
-            market_order=MarketOrderParams(
-                sender=self.subaccount,
-                amount=-to_x18(amount),
-                nonce=None
-            ),
-            slippage=slippage
-        )
-        res = self.client.market.place_market_order(params)
-        return {
-            "status": res.status.value,
-            "symbol": self._id_to_symbol_cache.get(product_id, str(product_id)),
-            "digest": res.data.digest if res.data else None,
-        }
+        try:
+            product_id = self._resolve_product_id(symbol)
+            params = PlaceMarketOrderParams(
+                product_id=product_id,
+                market_order=MarketOrderParams(
+                    sender=self.subaccount,
+                    amount=-to_x18(amount),
+                    nonce=None
+                ),
+                slippage=slippage
+            )
+            res = self.client.market.place_market_order(params)
+            return self._handle_order_response(res, symbol)
+        except Exception as e:
+            msg, code = self._parse_error(str(e))
+            return {"status": "failure", "symbol": symbol, "error": msg, "error_code": code}
+
+    def buy_limit(self, symbol: str, price: float, amount: float, expires_in: int = 3600*24, reduce_only: bool = False) -> dict:
+        """
+        Place a Limit Buy order.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :param price: The limit price (float)
+        :param amount: The amount to buy (float)
+        :param expires_in: Expiration in seconds from now (default 24h)
+        :param reduce_only: Whether this is a reduce-only order
+        :return: A simplified dictionary with order results.
+        """
+        try:
+            product_id = self._resolve_product_id(symbol)
+            price_inc = self._price_increment_cache.get(product_id, 1)
+
+            params = PlaceOrderParams(
+                product_id=product_id,
+                order=OrderParams(
+                    sender=self.subaccount,
+                    amount=to_x18(amount),
+                    nonce=None,
+                    priceX18=round_x18(to_x18(price), price_inc),
+                    expiration=get_expiration_timestamp(expires_in),
+                    appendix=build_appendix(OrderType.DEFAULT, reduce_only=reduce_only)
+                )
+            )
+            res = self.client.market.place_order(params)
+            return self._handle_order_response(res, symbol)
+        except Exception as e:
+            msg, code = self._parse_error(str(e))
+            return {"status": "failure", "symbol": symbol, "error": msg, "error_code": code}
+
+    def sell_limit(self, symbol: str, price: float, amount: float, expires_in: int = 3600*24, reduce_only: bool = False) -> dict:
+        """
+        Place a Limit Sell order.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :param price: The limit price (float)
+        :param amount: The amount to sell (float)
+        :param expires_in: Expiration in seconds from now (default 24h)
+        :param reduce_only: Whether this is a reduce-only order
+        :return: A simplified dictionary with order results.
+        """
+        try:
+            product_id = self._resolve_product_id(symbol)
+            price_inc = self._price_increment_cache.get(product_id, 1)
+
+            params = PlaceOrderParams(
+                product_id=product_id,
+                order=OrderParams(
+                    sender=self.subaccount,
+                    amount=-to_x18(amount),
+                    nonce=None,
+                    priceX18=round_x18(to_x18(price), price_inc),
+                    expiration=get_expiration_timestamp(expires_in),
+                    appendix=build_appendix(OrderType.DEFAULT, reduce_only=reduce_only)
+                )
+            )
+            res = self.client.market.place_order(params)
+            return self._handle_order_response(res, symbol)
+        except Exception as e:
+            msg, code = self._parse_error(str(e))
+            return {"status": "failure", "symbol": symbol, "error": msg, "error_code": code}
