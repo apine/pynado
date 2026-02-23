@@ -7,12 +7,12 @@ name = "pynado"
 version = "0.1.4"
 description = "A friendly, Pythonic wrapper for the Nado Protocol SDK"
 readme = "README.md"
+license = "MIT"
 authors = [
   { name = "apine", email = "a@b.com" },
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 requires-python = ">=3.9"
