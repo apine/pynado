@@ -20,36 +20,39 @@ def test_nado_basic():
         print(f"Subaccount: {client.subaccount}")
         print(f"Balance:    {client.balance:.2f} USDT")
 
-        # --- Complete Trade Cycle ---
         symbol = "BTC-PERP"
-        amount = 0.0001 # Small test amount
+        amount = 0.002 # > $100 min notional
 
-        # 1. Market Buy
-        print(f"\n[1/3] Placing Market BUY for {amount} {symbol}...")
-        buy_res = client.buy(symbol, amount)
-        print(f"BUY Response: {json.dumps(buy_res, indent=2)}")
+        # 1. Place Limit Order
+        limit_price = 50000.0 # Way out of money for safety
+        print(f"\n[1/3] Placing Limit BUY at {limit_price} for {amount} {symbol}...")
+        res = client.buy_limit(symbol, limit_price, amount)
+        print(f"LIMIT Response: {json.dumps(res, indent=2)}")
 
-        if buy_res["status"] == "success":
-            time.sleep(2)
-            pos = client.get_position(symbol)
-            print(f"Current Position: {json.dumps(pos, indent=2)}")
+        if res["status"] == "success":
+            print("\nWaiting 10 seconds before canceling...")
+            time.sleep(10)
 
-            # 2. Limit Sell (Closing)
-            limit_price = pos["average_entry_price"] * 1.05 # 5% profit target
-            print(f"\n[2/3] Placing Limit SELL at {limit_price:.2f} for {amount} {symbol}...")
-            limit_res = client.sell_limit(symbol, limit_price, amount, expires_in=60, reduce_only=True)
-            print(f"LIMIT Response: {json.dumps(limit_res, indent=2)}")
+            digest = res["digest"]
+            print(f"\n[2/3] Canceling specific order: {digest}...")
+            cancel_res = client.cancel_order(symbol, digest)
+            print(f"CANCEL Response: {json.dumps(cancel_res, indent=2)}")
+            print("\nWaiting 5 seconds before next test")
+            time.sleep(5)
 
-            # 3. Cleanup: Market Sell to actually close
-            print(f"\n[3/3] Closing position with Market SELL...")
-            sell_res = client.sell(symbol, amount)
-            print(f"SELL Response: {json.dumps(sell_res, indent=2)}")
+            # 2. Place another and cancel all
+            print(f"\n[3/3] Placing another order and testing cancel_all_orders()...")
+            client.buy_limit(symbol, limit_price, amount)
+            print("\nWaiting 10 seconds before canceling...")
+            time.sleep(10)
+            all_cancel_res = client.cancel_all_orders(symbol)
+            print(f"CANCEL ALL Response: {json.dumps(all_cancel_res, indent=2)}")
 
         else:
-            print("Skipping further steps because buy failed.")
+            print(f"Execution failed: {res.get('error', 'Unknown error')}")
 
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nAn unexpected exception occurred: {e}")
 
 if __name__ == "__main__":
     test_nado_basic()

@@ -33,28 +33,32 @@ print(f"Wallet Address: {client.address}")
 print(f"USDT Balance:   {client.balance:,.2f}")
 ```
 
-### 3. Trading (Market Orders)
+### 3. Trading (Market & Limit Orders)
 
-Pynado handles symbol resolution (Spot vs. Perp) and unit scaling (`to_x18`) automatically.
+Pynado handles symbol resolution (Spot vs. Perp), unit scaling (`to_x18`), and price rounding automatically.
 
 ```python
-# Market Buy 0.01 BTC (Spot)
+# Market Buy 0.01 BTC
 client.buy("BTC", 0.01)
 
-# Market Sell 0.5 ETH (Perp)
-client.sell("ETH-PERP", 0.5)
+# Limit Sell 0.5 ETH-PERP at 3,500 USD (Expires in 24h by default)
+res = client.sell_limit("ETH-PERP", 3500, 0.5)
+print(f"Order Digest: {res['digest']}")
 ```
 
-### 4. Limit Orders
+### 4. Order Management
 
-Specify a price and optional expiration (default is 24 hours).
+Cancel specific orders using their digest or clear your entire book.
 
 ```python
-# Limit Buy 0.01 BTC at 65,000 USD
-client.buy_limit("BTC", 65000, 0.01)
+# Cancel a specific order
+client.cancel_order("ETH-PERP", "0x...")
 
-# Limit Sell 0.1 ETH-PERP at 3,500 USD (Expires in 1 hour, Reduce-Only)
-client.sell_limit("ETH-PERP", 3500, 0.1, expires_in=3600, reduce_only=True)
+# Cancel ALL open orders across all products
+client.cancel_all_orders()
+
+# Cancel all open orders for a specific product
+client.cancel_all_orders("BTC")
 ```
 
 ### 5. Checking Positions
@@ -78,5 +82,6 @@ for p in all_pos:
 *   **Automatic Scaling:** Handles 18-decimal scaling for you (returns `float` for balances, accepts `float` for orders).
 *   **Symbol Resolution:** Supports both Spot ("BTC") and Perp ("BTC-PERP") symbols.
 *   **Position Management:** Friendly methods to retrieve current holdings and average entry prices.
+*   **Order Management:** Easy methods to cancel specific orders or clear your entire order book.
 *   **Intelligent Defaults:** Automatically handles price increments (rounding) and order expiration.
 *   **Environment Friendly:** Native support for `.env` files.

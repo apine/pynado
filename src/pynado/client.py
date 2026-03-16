@@ -4,7 +4,10 @@ from typing import Optional, Dict
 from dotenv import load_dotenv
 from nado_protocol.client import create_nado_client, NadoClientMode
 from nado_protocol.utils.math import from_x18, to_x18, round_x18
-from nado_protocol.engine_client.types.execute import PlaceMarketOrderParams, MarketOrderParams, PlaceOrderParams, OrderParams
+from nado_protocol.engine_client.types.execute import (
+    PlaceMarketOrderParams, MarketOrderParams, PlaceOrderParams, OrderParams,
+    CancelOrdersParams, CancelProductOrdersParams
+)
 from nado_protocol.utils.expiration import OrderType, get_expiration_timestamp
 from nado_protocol.utils.order import build_appendix
 
@@ -80,11 +83,14 @@ class Nado:
     def _handle_order_response(self, res, symbol: str) -> dict:
         """Standardize the order response and handle errors."""
         if res.status.value == "success":
-            return {
+            data = {
                 "status": "success",
                 "symbol": symbol,
-                "digest": res.data.digest if res.data else None,
             }
+            # Only add digest if it exists in the response data
+            if res.data and hasattr(res.data, "digest"):
+                data["digest"] = res.data.digest
+            return data
 
         error_msg, error_code = self._parse_error(str(res.error))
         return {
@@ -315,3 +321,50 @@ class Nado:
         except Exception as e:
             msg, code = self._parse_error(str(e))
             return {"status": "failure", "symbol": symbol, "error": msg, "error_code": code}
+
+    def cancel_order(self, symbol: str, digest: str) -> dict:
+        """
+        Cancel a specific order by its digest (order ID).
+
+        :param symbol: The symbol of the product.
+        :param digest: The digest (ID) of the order to cancel.
+        """
+        try:
+            product_id = self._resolve_product_id(symbol)
+            params = CancelOrdersParams(
+                sender=self.subaccount,
+                productIds=[product_id],
+                digests=[digest],
+                nonce=None
+            )
+            res = self.client.market.cancel_orders(params)
+            return self._handle_order_response(res, symbol)
+        except Exception as e:
+            msg, code = self._parse_error(str(e))
+            return {"status": "failure", "symbol": symbol, "error": msg, "error_code": code}
+
+    def cancel_all_orders(self, symbol: Optional[str] = None) -> dict:
+        """
+        Cancel all open orders for a specific symbol, or for all symbols if None.
+
+        :param symbol: Optional symbol to filter cancellation.
+        """
+        try:
+            if symbol:
+                product_ids = [self._resolve_product_id(symbol)]
+                display_symbol = symbol
+            else:
+                # Cancel for all cached products
+                product_ids = list(self._id_to_symbol_cache.keys())
+                display_symbol = "ALL"
+
+            params = CancelProductOrdersParams(
+                sender=self.subaccount,
+                productIds=product_ids,
+                nonce=None
+            )
+            res = self.client.market.cancel_product_orders(params)
+            return self._handle_order_response(res, display_symbol)
+        except Exception as e:
+            msg, code = self._parse_error(str(e))
+            return {"status": "failure", "symbol": symbol or "ALL", "error": msg, "error_code": code}
