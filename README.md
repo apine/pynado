@@ -33,7 +33,21 @@ print(f"Wallet Address: {client.address}")
 print(f"USDT Balance:   {client.balance:,.2f}")
 ```
 
-### 3. Trading (Market & Limit Orders)
+### 3. Market Data
+
+Retrieve real-time prices and order book depth.
+
+```python
+# Get current mid-price
+price = client.get_price("BTC-PERP")
+print(f"BTC Price: {price}")
+
+# Get top 5 levels of the order book
+book = client.get_market_liquidity("ETH-PERP", depth=5)
+print(f"Best Bid: {book['bids'][0][0]}")
+```
+
+### 4. Trading (Market & Limit Orders)
 
 Pynado handles symbol resolution (Spot vs. Perp), unit scaling (`to_x18`), and price rounding automatically.
 
@@ -46,7 +60,7 @@ res = client.sell_limit("ETH-PERP", 3500, 0.5)
 print(f"Order Digest: {res['digest']}")
 ```
 
-### 4. Order Management
+### 5. Order Management
 
 Cancel specific orders using their digest or clear your entire book.
 
@@ -61,7 +75,7 @@ client.cancel_all_orders()
 client.cancel_all_orders("BTC")
 ```
 
-### 5. Checking Positions
+### 6. Checking Positions
 
 You can easily check specific positions or get an overview of your entire account.
 
@@ -81,6 +95,7 @@ for p in all_pos:
 *   **Simple Interface:** One class (`Nado`) to rule them all.
 *   **Automatic Scaling:** Handles 18-decimal scaling for you (returns `float` for balances, accepts `float` for orders).
 *   **Symbol Resolution:** Supports both Spot ("BTC") and Perp ("BTC-PERP") symbols.
+*   **Market Data:** Easy access to prices and order book liquidity.
 *   **Position Management:** Friendly methods to retrieve current holdings and average entry prices.
 *   **Order Management:** Easy methods to cancel specific orders or clear your entire order book.
 *   **Intelligent Defaults:** Automatically handles price increments (rounding) and order expiration.
