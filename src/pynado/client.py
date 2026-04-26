@@ -206,6 +206,35 @@ class Nado:
 
         return positions
 
+    def get_market_liquidity(self, symbol: str, depth: int = 10) -> dict:
+        """
+        Get the order book liquidity for a symbol.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :param depth: Number of levels to fetch (default 10)
+        :return: A dictionary with 'bids' and 'asks' lists of [price, amount].
+        """
+        product_id = self._resolve_product_id(symbol)
+        data = self.client.market.get_market_liquidity(product_id, depth)
+
+        return {
+            "bids": [[from_x18(int(b[0])), from_x18(int(b[1]))] for b in data.bids],
+            "asks": [[from_x18(int(a[0])), from_x18(int(a[1]))] for a in data.asks]
+        }
+
+    def get_price(self, symbol: str) -> float:
+        """
+        Get the current mid-price for a symbol.
+
+        :param symbol: The symbol (e.g., "BTC", "ETH-PERP")
+        :return: Current mid-price (float).
+        """
+        product_id = self._resolve_product_id(symbol)
+        data = self.client.market.get_latest_market_price(product_id)
+        bid = from_x18(int(data.bid_x18))
+        ask = from_x18(int(data.ask_x18))
+        return (bid + ask) / 2.0
+
     def buy(self, symbol: str, amount: float, slippage: float = 0.05) -> dict:
         """
         Place a market buy order.
